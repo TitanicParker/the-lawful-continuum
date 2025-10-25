@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Metatron Frame • Generative Toy</title>
+  <style>
+    :root{ --bg:#0b0f14; --ink:#ffffff; --circuit:#68ffb3; --accent:#ffcc66; --hot:#ff6b6b; }
+    html, body { height:100%; margin:0; background:var(--bg); color:var(--ink); font:14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .stage { position:relative; height:100%; display:grid; place-items:center; }
+    .frame{ width:min(92vmin, 1100px); aspect-ratio:1/1; box-shadow: 0 12px 40px rgba(0,0,0,.45), inset 0 8px 40px rgba(0,0,0,.35); border-radius:12px; background: radial-gradient(160% 120% at 20% 0%, #0f1722 0%, var(--bg) 55%), radial-gradient(140% 100% at 80% 100%, #0d1a2b 0%, #071018 55%), var(--bg); overflow:hidden; }
+    svg{ width:100%; height:100%; display:block; }
+    .lattice line{ stroke: var(--circuit); stroke-opacity:.75; vector-effect: non-scaling-stroke; stroke-width:0.9px; }
+    .circle{ fill:none; stroke:var(--ink); stroke-width:1.3px; vector-effect: non-scaling-stroke; stroke-linecap:round; stroke-linejoin:round; opacity:.95; }
+    .center-dot{ fill:var(--accent); stroke:none; }
+    .ring-dot{ fill:#a0ffd4; stroke:none; }
+    .tri { fill: none; stroke: rgba(255,255,255,.65); stroke-width: 0.8px; vector-effect: non-scaling-stroke; opacity: 0; }
+
+    .hint{ position:absolute; left:50%; bottom:14px; transform:translateX(-50%); color:#cfe7d8; font-size:12px; opacity:.75; letter-spacing:.2px; text-align:center; padding:6px 10px; background:rgba(0,0,0,.25); border-radius:8px; backdrop-filter: blur(4px); }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <div class="frame">
+      <svg id="art" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Metatron Frame — Generative Toy"></svg>
+    </div>
+    <div class="hint">Autoplay: constant form, fluid presentation • Variants remix every 8–12 seconds.</div>
+  </main>
+
+<script>
+(function(){
+  // ===== SVG root =====
+  const svg = document.getElementById('art');
+
+  // ===== Unit geometry =====
+  const R = 100;              // unit radius (edge of unit equilateral)
+  const s = R;                // edge length
+  const h = Math.sqrt(3)*s/2; // family spacing
+  const S = 5 * R;            // frame half-size
+  svg.setAttribute('viewBox', `${-S} ${-S} ${2*S} ${2*S}`);
+
+  // ===== Helpers =====
+  function make(tag, attrs={}){ const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for(const k in attrs) el.setAttribute(k, attrs[k]); return el; }
+  function line(x1,y1,x2,y2){ return make('line', {x1,y1,x2,y2}); }
+  function circleEl(cx,cy,r){ return make('circle', {cx,cy,r}); }
+  function polygon(points){ return make('polygon', {points: points.map(p=>p[0]+","+p[1]).join(' ')}); }
+  const clamp = (x,a,b)=> Math.max(a, Math.min(b,x));
+  const ease = t => 1- Math.pow(1-t, 3);
+  const shuffle = arr => { const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; };
+
+  // ===== Groups =====
+  const gLat0   = make('g', {class:'lattice l0'});
+  const gLat60  = make('g', {class:'lattice l60'});
+  const gLatm60 = make('g', {class:'lattice lm60'});
+  const gCir    = make('g');
+  const gTris   = make('g');
+  const gMarks  = make('g');
+  svg.append(gLat0, gLat60, gLatm60, gCir, gTris, gMarks);
+
+  // ===== Lattice drawing =====
+  function drawFamily(theta, group){
+    const v = {x: Math.cos(theta), y: Math.sin(theta)};         // direction
+    const n = {x: -Math.sin(theta), y: Math.cos(theta)};        // normal
+    const L = 3 * Math.hypot(2*S, 2*S);
+    const halfSpan = Math.abs(n.x)*S + Math.abs(n.y)*S;
+    const count = Math.ceil(halfSpan / h) + 2;
+    for(let k=-count; k<=count; k++){
+      const d = k * h; const px = n.x * d, py = n.y * d;
+      const x1 = px - v.x * (L/2), y1 = py - v.y * (L/2);
+      const x2 = px + v.x * (L/2), y2 = py + v.y * (L/2);
+      const ln = line(x1,y1,x2,y2); ln.style.opacity = 0; group.append(ln);
+    }
+  }
+  drawFamily(0, gLat0);
+  drawFamily(Math.PI/3, gLat60);
+  drawFamily(-Math.PI/3, gLatm60);
+
+  // ===== Centers & Circles =====
+  const dirs = [0, 60, 120, 180, 240, 300].map(d => d * Math.PI/180);
+  const centers = [];
+  centers.push({x:0,y:0, kind:'center'});
+  for(const t of dirs){ centers.push({x:2*R*Math.cos(t), y:2*R*Math.sin(t), kind:'ring'}); }
+  for(const t of dirs){ centers.push({x:4*R*Math.cos(t), y:4*R*Math.sin(t), kind:'ring'}); }
+
+  const circleNodes = centers.map(c => { const el = circleEl(c.x, c.y, R); el.setAttribute('class','circle'); el.style.opacity = 0; gCir.append(el); return el; });
+
+  // ===== 78 equilateral triangles (for optional equilateral-by-equilateral reveal) =====
+  // For each circle, generate 6 central equilateral triangles.
+  const triNodes = [];
+  function addEquilateralTriangles(){
+    const SIX = 6; const TWO_PI = Math.PI*2;
+    for(let i=0;i<centers.length;i++){
+      const c = centers[i];
+      for(let k=0;k<SIX;k++){
+        const a0 = (TWO_PI*k)/SIX;         // vertex A on circumference
+        const a1 = (TWO_PI*(k+1))/SIX;     // vertex B
+        const A = [c.x + R*Math.cos(a0), c.y + R*Math.sin(a0)];
+        const B = [c.x + R*Math.cos(a1), c.y + R*Math.sin(a1)];
+        const T = polygon([A, B, [c.x,c.y]]);
+        T.setAttribute('class','tri');
+        gTris.append(T);
+        triNodes.push(T);
+      }
+    }
+  }
+  addEquilateralTriangles();
+
+  // ===== Center markers (kept subtle, always present) =====
+  function drawCenterMarkers(){
+    gMarks.innerHTML = '';
+    for(const c of centers){
+      const dot = circleEl(c.x, c.y, 3);
+      dot.setAttribute('class', c.kind==='center' ? 'center-dot' : 'ring-dot');
+      dot.style.opacity = 0.85;
+      gMarks.append(dot);
+    }
+  }
+  drawCenterMarkers();
+
+  // ===== Timeline Director (autoplay) =====
+  // Each episode lasts 8s or 12s. We randomize:
+  // - Order of the three families
+  // - Lattice mode: 'tier-fade' (family fades in), 'by-line' (lines appear one-by-one)
+  // - Circle mode: 'stamp', 'draw-seq', 'ray-sweep', 'random-stagger'
+  // - Optional triangle mode: 'tri-seq' to draw 78 triangles then fade them out
+
+  let rafId=null, tStart=0, DUR=12000, playing=false, episode=null;
+
+  function resetAll(){
+    // lattice
+    [gLat0, gLat60, gLatm60].forEach(g=>{[...g.children].forEach(el=>{ el.style.opacity=0; el.removeAttribute('stroke-dasharray'); el.removeAttribute('stroke-dashoffset'); });});
+    // circles
+    const C = 2*Math.PI*R;
+    circleNodes.forEach(el=>{ el.style.opacity=0; el.removeAttribute('stroke-dasharray'); el.removeAttribute('stroke-dashoffset'); });
+    // triangles
+    triNodes.forEach(el=>{ el.style.opacity=0; el.removeAttribute('stroke-dasharray'); el.removeAttribute('stroke-dashoffset'); });
+  }
+
+  function primeEpisode(){
+    resetAll();
+    DUR = Math.random()<0.5 ? 8000 : 12000;
+    const fams = [ {g:gLat0, theta:0, key:'0'}, {g:gLat60, theta:60, key:'+60'}, {g:gLatm60, theta:-60, key:'-60'} ];
+    const famOrder = shuffle(fams);
+    const latticeMode = Math.random() < 0.5 ? 'tier-fade' : 'by-line';
+    const circleModes = ['stamp','draw-seq','ray-sweep','random-stagger'];
+    const circleMode = circleModes[Math.floor(Math.random()*circleModes.length)];
+    const includeTriangles = Math.random() < 0.45; // sometimes, for variety
+
+    episode = { famOrder, latticeMode, circleMode, includeTriangles };
+  }
+
+  // Utilities for stroke-draw animation
+  const circleCirc = 2*Math.PI*R;
+  function prepDraw(el, C){ el.setAttribute('stroke-dasharray', C.toFixed(2)); el.setAttribute('stroke-dashoffset', C.toFixed(2)); el.style.opacity=1; }
+  function setDraw(el, C, t){ const off=(1-clamp(t,0,1))*C; el.setAttribute('stroke-dashoffset', off.toFixed(2)); }
+
+  // Timeline application per episode
+  function applyEpisode(t){
+    const e = ease(t);
+    const { famOrder, latticeMode, circleMode, includeTriangles } = episode;
+
+    // Phase split: lattice (0→0.45), circles (0.45→1.0). If triangles are included, they occupy 0.45→0.65, then circles 0.65→1.0
+    const tLatEnd = 0.45;
+    const tTriEnd = includeTriangles ? 0.65 : 0.45;
+
+    // ---- Lattice phase ----
+    if(latticeMode==='tier-fade'){
+      const per = tLatEnd / 3;
+      famOrder.forEach((f,i)=>{
+        const start = i*per, end = (i+1)*per;
+        const alpha = stepRange(e, start, end);
+        [...f.g.children].forEach(el=>{ el.style.opacity = alpha; });
+      });
+    } else { // 'by-line'
+      const per = tLatEnd / 3;
+      famOrder.forEach((f,i)=>{
+        const start = i*per, end=(i+1)*per; const local = normRange(e, start, end);
+        const lines = [...f.g.children]; const n=lines.length; const p = clamp(local,0,1);
+        const visible = Math.floor(p * n);
+        for(let k=0;k<n;k++){ lines[k].style.opacity = k < visible ? 1 : 0; }
+      });
+    }
+
+    // ---- Triangle phase (optional equilateral-by-equilateral) ----
+    if(includeTriangles){
+      const local = normRange(e, 0.45, tTriEnd);
+      const per = 1/triNodes.length;
+      for(let i=0;i<triNodes.length;i++){
+        const segT = clamp((local - i*per)/per, 0, 1);
+        const T = triNodes[i];
+        if(segT>0 && !T.getAttribute('stroke-dasharray')){ // prep once
+          const len = approxPolyLen(T.getAttribute('points'));
+          T.setAttribute('stroke-dasharray', len.toFixed(2));
+          T.setAttribute('stroke-dashoffset', len.toFixed(2));
+          T.style.opacity = 1;
+        }
+        if(T.getAttribute('stroke-dasharray')){
+          const len = parseFloat(T.getAttribute('stroke-dasharray'));
+          setDraw(T, len, segT);
+        }
+      }
+    }
+
+    // ---- Circle phase ----
+    const tCirStart = tTriEnd; // either 0.45 or 0.65
+    const localCir = normRange(e, tCirStart, 1.0);
+    if(circleMode==='stamp'){
+      const a = localCir; circleNodes.forEach(el=>{ el.style.opacity = a; });
+    } else if(circleMode==='draw-seq'){
+      // sequential draw across 13
+      circleNodes.forEach(el=>{ if(!el.getAttribute('stroke-dasharray')) prepDraw(el, circleCirc); });
+      const per = 1/13; for(let i=0;i<13;i++){ const segT = clamp((localCir - i*per)/per, 0, 1); setDraw(circleNodes[i], circleCirc, segT); circleNodes[i].style.opacity = segT>0 ? 1 : 0; }
+    } else if(circleMode==='ray-sweep'){
+      // order: center, then inner/outer interleaved per ray
+      const order = [0, 1,7, 2,8, 3,9, 4,10, 5,11, 6,12];
+      circleNodes.forEach(el=>{ if(!el.getAttribute('stroke-dasharray')) prepDraw(el, circleCirc); });
+      const per = 1/order.length; order.forEach((idx,j)=>{ const segT = clamp((localCir - j*per)/per, 0, 1); setDraw(circleNodes[idx], circleCirc, segT); circleNodes[idx].style.opacity = segT>0 ? 1 : 0; });
+    } else if(circleMode==='random-stagger'){
+      const order = shuffle([...Array(13).keys()]);
+      circleNodes.forEach(el=>{ if(!el.getAttribute('stroke-dasharray')) prepDraw(el, circleCirc); });
+      const per = 1/order.length; order.forEach((idx,j)=>{ const segT = clamp((localCir - j*per)/per, 0, 1); setDraw(circleNodes[idx], circleCirc, segT); circleNodes[idx].style.opacity = segT>0 ? 1 : 0; });
+    }
+  }
+
+  function stepRange(t, a, b){ if(t<=a) return 0; if(t>=b) return 1; return (t-a)/(b-a); }
+  function normRange(t, a, b){ return clamp((t-a)/(b-a), 0, 1); }
+
+  // Approximate polygon length (for dashed triangle draw)
+  function approxPolyLen(pointsStr){
+    const pts = pointsStr.split(/\s+/).map(p=>p.split(',').map(Number));
+    let L=0; for(let i=0;i<pts.length;i++){ const [x1,y1]=pts[i]; const [x2,y2]=pts[(i+1)%pts.length]; L += Math.hypot(x2-x1, y2-y1); } return L;
+  }
+
+  function tick(now){
+    if(!playing){ return; }
+    const t = clamp((now - tStart)/DUR, 0, 1);
+    applyEpisode(t);
+    if(t>=1){ // transition to next episode
+      playing=false; setTimeout(start, 250);
+    } else {
+      rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  function start(){
+    primeEpisode();
+    tStart = performance.now();
+    playing = true;
+    rafId = requestAnimationFrame(tick);
+  }
+
+  // ===== Self-tests (no UI panel; log to console) =====
+  function runTests(){
+    console.assert(svg instanceof SVGSVGElement, 'SVG root exists');
+    console.assert(circleNodes.length===13, 'Exactly 13 circle nodes');
+    const linesTotal = [...gLat0.children].length + [...gLat60.children].length + [...gLatm60.children].length;
+    console.assert(linesTotal>0, 'Lattice lines exist');
+    console.assert(triNodes.length===78, '78 triangles prepared');
+  }
+
+  runTests();
+  resetAll();
+  start();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Lawful Lattice • Constructive Animation (G12)</title>
+<style>
+  :root{ --bg:#0b0f14; --ink:#e6f6ef; --mint:#68ffb3; --blue:#7aa2ff; }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+  .wrap{display:grid;grid-template-rows:auto 1fr;gap:10px;height:100vh;padding:10px;}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#071018;border-radius:10px;padding:8px 10px;box-shadow:0 6px 30px rgba(0,0,0,.5);}
+  .bar button{background:#22303a;color:var(--ink);border:0;border-radius:8px;padding:8px 10px;cursor:pointer}
+  .bar .primary{background:#ffcc66;color:#071018}
+  .bar input[type=number]{width:80px;padding:6px;border:0;border-radius:6px;background:#0b1116;color:var(--ink)}
+  .stage{position:relative;background:radial-gradient(160% 120% at 20% 0%, #0f1722 0%, var(--bg) 55%), radial-gradient(140% 100% at 80% 100%, #0d1a2b 0, #071018 55%), var(--bg); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.5); display:grid; place-items:center; overflow:hidden}
+  canvas{width:min(92vmin,1100px); height:min(92vmin,1100px); aspect-ratio:1/1; image-rendering: crisp-edges;}
+  .tip{font-size:12px;opacity:.8;margin-left:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <button id="play" class="primary">Play</button>
+    <button id="pause">Pause</button>
+    <button id="restart">Restart</button>
+    <label>Duration (s) <input id="dur" type="number" value="12" min="2" step="1"/></label>
+    <label>Lines per family <input id="count" type="number" value="17" min="3" step="2"/></label>
+    <button id="record" class="">Record</button>
+    <button id="stopRec" disabled>Stop & Download</button>
+    <span class="tip">Constructs primal (0°,±60°) → dual (30°,90°,...) with smooth reveal.</span>
+  </div>
+  <div class="stage">
+    <canvas id="cnv" width="1200" height="1200"></canvas>
+  </div>
+</div>
+
+<script>
+(function(){
+  const cnv = document.getElementById('cnv');
+  const ctx = cnv.getContext('2d');
+  const playBtn = document.getElementById('play');
+  const pauseBtn = document.getElementById('pause');
+  const restartBtn = document.getElementById('restart');
+  const durInput = document.getElementById('dur');
+  const countInput = document.getElementById('count');
+  const recBtn = document.getElementById('record');
+  const stopBtn = document.getElementById('stopRec');
+
+  const W = cnv.width, H = cnv.height;
+  const S = Math.min(W,H)/2 * 0.92; // safe radius
+  const mint = getCSS('--mint') || '#68ffb3';
+  const blue = getCSS('--blue') || '#7aa2ff';
+  const ink = getCSS('--ink') || '#e6f6ef';
+
+  function getCSS(varName){ return getComputedStyle(document.documentElement).getPropertyValue(varName).trim(); }
+
+  // Families
+  const PRIMAL = [0, 60, -60];
+  const DUAL   = [30, 90, 150, -150, -90, -30]; // symmetric
+  const toRad = d => d * Math.PI/180;
+  const h = Math.sqrt(3)/2; // spacing in "R units" (we'll scale)
+
+  // Animation state
+  let rafId = null, t0 = null, isPlaying = false;
+  let recorder = null, chunks = [];
+
+  function reset(){
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,W,H);
+    // center + scale to unit = 100
+    ctx.translate(W/2, H/2);
+    ctx.scale(S/10, S/10); // world coords in [-10,10]
+    ctx.lineCap = 'round';
+  }
+
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  const clamp = (x,a,b)=> Math.max(a, Math.min(b,x));
+  const ease = t => 1 - Math.pow(1-t, 3); // cubic ease-out
+
+  function drawFamily(thetaDeg, color, count, progress){
+    const t = toRad(thetaDeg);
+    const vx = Math.cos(t), vy = Math.sin(t);
+    const nx = -Math.sin(t), ny = Math.cos(t);
+    const halfSpan = 10; // world half-span
+    const spacing = h;   // world spacing
+    const maxK = Math.ceil(halfSpan/spacing)+2;
+    // choose symmetric subset around 0 up to count
+    const ks = [];
+    const half = Math.floor(count/2);
+    for(let k=-half;k<=half;k++){ ks.push(k); }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 0.06;
+    for(let i=0;i<ks.length;i++){
+      const k = ks[i];
+      const d = k * spacing;
+      const px = nx * d, py = ny * d;
+      // visible-portion for this line based on progress: reveal inward→outward
+      // compute per-line reveal by ordering by |k|
+      const order = Math.abs(k);
+      const per = 1.0 / (half+1);
+      const local = clamp((progress - order*per)/per, 0, 1);
+      if(local<=0) continue;
+      // line endpoints
+      const L = 24;
+      const x1 = px - vx*L*local, y1 = py - vy*L*local;
+      const x2 = px + vx*L*local, y2 = py + vy*L*local;
+      ctx.beginPath();
+      ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+      ctx.globalAlpha = 0.25 + 0.75*local;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1.0;
+  }
+
+  function frame(now){
+    if(!isPlaying){ return; }
+    if(!t0) t0 = now;
+    const D = clamp(parseFloat(durInput.value)||12, 2, 120) * 1000;
+    const count = Math.max(3, parseInt(countInput.value)||17);
+    const tt = clamp((now - t0)/D, 0, 1);
+    const e = ease(tt);
+
+    reset();
+    // Two phases: primal build (0→0.5), then dual build (0.5→1)
+    const pEnd = 0.5, dStart = 0.35; // slight overlap for nicer effect
+    const pT = clamp(e / pEnd, 0, 1);
+    const dT = clamp((e - dStart) / (1 - dStart), 0, 1);
+
+    // background subtle vignette grid (optional)
+    // draw families
+    for(const th of PRIMAL){ drawFamily(th, mint, count, pT); }
+    for(const th of DUAL){ drawFamily(th, blue, count, dT); }
+
+    if(tt>=1){ isPlaying = false; t0 = null; cancelAnimationFrame(rafId); }
+    else { rafId = requestAnimationFrame(frame); }
+  }
+
+  function play(){ if(isPlaying) return; isPlaying = true; t0 = null; rafId = requestAnimationFrame(frame); }
+  function pause(){ isPlaying = false; cancelAnimationFrame(rafId); }
+  function restart(){ t0 = null; isPlaying = true; rafId = requestAnimationFrame(frame); }
+
+  playBtn.addEventListener('click', play);
+  pauseBtn.addEventListener('click', pause);
+  restartBtn.addEventListener('click', restart);
+
+  // Recording via MediaRecorder on canvas.captureStream()
+  recBtn.addEventListener('click', ()=>{
+    if(recorder){ return; }
+    const stream = cnv.captureStream(60);
+    chunks = [];
+    recorder = new MediaRecorder(stream, { mimeType: preferredMime() });
+    recorder.ondataavailable = e => { if(e.data && e.data.size>0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: recorder.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ext = recorder.mimeType.includes('webm') ? 'webm' : 'mp4';
+      a.download = `lawful_lattice.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      recorder = null; chunks = [];
+      stopBtn.disabled = true;
+    };
+    recorder.start();
+    stopBtn.disabled = false;
+    // auto play
+    restart();
+  });
+  stopBtn.addEventListener('click', ()=>{ if(recorder){ recorder.stop(); } });
+
+  function preferredMime(){
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4' // often unsupported in MediaRecorder; included as fallback name
+    ];
+    for(const m of candidates){ if(MediaRecorder.isTypeSupported(m)) return m; }
+    return '';
+  }
+
+  // initial render (static)
+  reset(); frame(performance.now());
+
+})();
+</script>
+</body>
+</html>
